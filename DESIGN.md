@@ -17,7 +17,7 @@
 ┌──────────────────┐            ┌──────────────────┐
 │ RTSP Producer    │            │ ONVIF Worker     │
 │ Thread           │            │ Thread           │
-│ (GStreamer)      │            │ (zeep client)    │
+│ (OpenCV/GStreamer)│            │ (onvif-zeep)     │
 └──────────────────┘            └──────────────────┘
          ↓                                  ↑
       Frame Queue                   Command Queue
@@ -424,7 +424,7 @@ sudo apt-get install -y \
   gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad \
-  python3-gi gir1.2-gstreamer-1.0
+  python3-opencv
 
 # NVIDIA components (JetPack)
 # L4T Multimedia API for NVDEC
@@ -433,7 +433,7 @@ sudo apt-get install -y \
 ### Virtual Environment
 ```bash
 python3 -m venv .venv --system-site-packages
-# ↑ must include system GStreamer bindings
+# ↑ trên Jetson nên dùng system OpenCV/GStreamer packages
 source .venv/bin/activate
 pip install -r requirements.txt
 ```

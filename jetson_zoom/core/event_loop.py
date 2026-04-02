@@ -10,7 +10,7 @@ Responsibilities:
 import queue
 import threading
 import time
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Dict, Any
 from abc import ABC, abstractmethod
 
 from jetson_zoom.logger import get_logger
@@ -101,15 +101,24 @@ class EventLoop:
         self._running = True
         self._start_time = time.time()
 
+        display_backend = (self.config.streaming.display_backend or "opencv").strip().lower()
+        cv2 = None
+        if display_backend == "opencv":
+            cv2 = self._import_cv2()
+            cv2.namedWindow(self.config.streaming.window_name, cv2.WINDOW_NORMAL)
+
         try:
             while not self._stop_event.is_set():
                 loop_start = time.time()
 
                 # Try to get next frame
-                self._process_frame()
+                frame = self._process_frame()
+                if frame is not None and cv2 is not None:
+                    self._display_frame(cv2, frame)
 
                 # Handle input events (non-blocking)
-                self._process_input()
+                if cv2 is not None:
+                    self._process_input_opencv(cv2)
 
                 # Monitor metrics periodically
                 self._check_metrics()
@@ -126,45 +135,109 @@ class EventLoop:
             self.logger.error(f"Event loop error: {e}", exc_info=True)
         finally:
             self._cleanup()
+            if cv2 is not None:
+                try:
+                    cv2.destroyAllWindows()
+                except Exception:
+                    pass
 
-    def _process_frame(self) -> None:
-        """Process a single video frame from RTSP queue."""
+    def _process_frame(self) -> Optional[VideoFrame]:
+        """Get the most recent frame from RTSP queue (drain-oldest to reduce latency)."""
         try:
-            # Non-blocking get (timeout prevents blocking main thread)
-            frame = self.rtsp_handler.output_queue.get(timeout=0.01)
+            # Grab one frame, then drain the queue to keep the newest (lower latency).
+            frame: VideoFrame = self.rtsp_handler.output_queue.get(timeout=0.01)
+            drained = 0
+            while True:
+                try:
+                    frame = self.rtsp_handler.output_queue.get_nowait()
+                    drained += 1
+                except queue.Empty:
+                    break
 
-            # In real implementation, this would:
-            # - Convert frame buffer to displayable format
-            # - Render to screen
-            # - Update any overlays (zoom level, etc.)
-
+            if drained:
+                self._frames_dropped += drained
             self._frames_displayed += 1
 
             if self._frames_displayed % 100 == 0:
                 self.logger.debug(f"Displayed {self._frames_displayed} frames")
 
+            if self.event_handler is not None:
+                try:
+                    self.event_handler.on_frame_received(frame)
+                except Exception:
+                    pass
+            return frame
+
         except queue.Empty:
             # No frame available - skip this iteration
             self._frames_dropped += 1
+            return None
 
         except Exception as e:
             self.logger.error(f"Frame processing error: {e}")
+            return None
 
-    def _process_input(self) -> None:
-        """Process user input events (keyboard, mouse).
+    def _process_input_opencv(self, cv2) -> None:
+        """Read keyboard input via OpenCV window and route to `handle_key_press`."""
+        try:
+            if cv2.getWindowProperty(self.config.streaming.window_name, cv2.WND_PROP_VISIBLE) < 1:
+                self.stop()
+                return
+        except Exception:
+            pass
 
-        Keyboard mappings:
-        - 'i' / 'I': Zoom in
-        - 'o' / 'O': Zoom out
-        - 's' / 'S': Stop movement
-        - 'q' / 'Q': Quit application
+        key = cv2.waitKey(1) & 0xFF
+        if key == 255:
+            return
 
-        Note: In real implementation, this would integrate with a GUI framework
-        (e.g., PyQt, OpenCV) for proper event handling.
-        """
-        # Placeholder - real implementation would use proper event handling
-        # from GUI framework (PyQt5, OpenCV, etc.)
-        pass
+        try:
+            self.handle_key_press(chr(key))
+        except Exception:
+            # Ignore non-ASCII keys
+            return
+
+    def _display_frame(self, cv2, frame: VideoFrame) -> None:
+        """Render a frame using OpenCV."""
+        image = frame.image
+
+        try:
+            if (
+                self.config.streaming.display_width > 0
+                and self.config.streaming.display_height > 0
+            ):
+                image = cv2.resize(
+                    image,
+                    (self.config.streaming.display_width, self.config.streaming.display_height),
+                    interpolation=cv2.INTER_AREA,
+                )
+        except Exception:
+            pass
+
+        # Overlay a small status line (optional)
+        try:
+            status = self.get_status()
+            zoom_level = status.get("zoom_level")
+            zoom_text = f"{float(zoom_level):.2f}" if zoom_level is not None else "n/a"
+            overlay = (
+                f"FPS {status['actual_fps']:.1f}/{status['target_fps']} | "
+                f"Dropped {status['frames_dropped']} | "
+                f"ONVIF {'OK' if status.get('onvif_ready') else 'NO'} | "
+                f"Zoom.x {zoom_text}"
+            )
+            cv2.putText(
+                image,
+                overlay,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+        except Exception:
+            pass
+
+        cv2.imshow(self.config.streaming.window_name, image)
 
     def handle_key_press(self, key: str) -> None:
         """Public method to handle keyboard input (called by GUI integration).
@@ -173,6 +246,12 @@ class EventLoop:
             key: Key code or character
         """
         key_lower = key.lower().strip()
+
+        if self.event_handler is not None:
+            try:
+                self.event_handler.on_key_press(key_lower)
+            except Exception:
+                pass
 
         if key_lower == "i":
             self.continuous_mover.zoom_in()
@@ -184,6 +263,18 @@ class EventLoop:
             self.stop()
         else:
             self.logger.debug(f"Unknown key: {key}")
+
+    @staticmethod
+    def _import_cv2():
+        try:
+            import cv2  # type: ignore
+        except Exception as e:  # pragma: no cover
+            raise ImportError(
+                "OpenCV (cv2) is required for DISPLAY_BACKEND=opencv. "
+                "On Windows: pip install opencv-python. "
+                "On Jetson: sudo apt-get install python3-opencv."
+            ) from e
+        return cv2
 
     def _check_metrics(self) -> None:
         """Periodically report performance metrics."""
@@ -261,5 +352,6 @@ class EventLoop:
             "actual_fps": actual_fps,
             "target_fps": self.config.streaming.target_fps,
             "zoom_level": self.continuous_mover.get_zoom_level(),
+            "onvif_ready": self.continuous_mover.onvif_client.is_ready(),
             "elapsed_seconds": elapsed,
         }

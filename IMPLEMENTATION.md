@@ -10,7 +10,7 @@ jetson_zoom/
 ├── logger.py                # Colored logging setup
 ├── streams/
 │   ├── __init__.py
-│   └── rtsp_handler.py      # Producer thread (GStreamer + NVDEC)
+│   └── rtsp_handler.py      # Producer thread (OpenCV; tùy chọn GStreamer/NVDEC trên Jetson)
 ├── controllers/
 │   ├── __init__.py
 │   └── onvif_client.py      # Worker thread (ONVIF/SOAP)
@@ -64,20 +64,18 @@ jetson_zoom/
 **File**: `streams/rtsp_handler.py`
 
 Responsibilities:
-- Initialize GStreamer pipeline with NVIDIA acceleration
-- Decode H.264/H.265 video via NVDEC (no CPU load)
-- Push frames to queue at source framerate
+- Mở RTSP bằng OpenCV `VideoCapture`
+- Trên Jetson: có thể dùng `STREAM_BACKEND=gst` để chạy pipeline GStreamer/NVDEC
+- Push frame vào queue (non-blocking) để UI thread hiển thị
 - Monitor performance metrics
 
 Key Methods:
 - `run()`: Thread main loop
-- `_create_pipeline()`: Setup GStreamer with NVIDIA nvv4l2decoder
-- `_on_new_sample()`: Frame delivery callback
 - `stop()`: Graceful shutdown
 
 Safety Features:
-- Non-blocking frame push (drops frame if queue full, logs warning)
-- Automatic pipeline cleanup in finally block
+- Non-blocking frame push (queue full sẽ drop frame cũ để giữ “live”)
+- Reconnect/backoff khi không nhận được frame
 - FPS monitoring
 
 ### 2. ONVIFClient (Worker Thread)
@@ -91,7 +89,7 @@ Responsibilities:
 
 Key Methods:
 - `run()`: Thread main loop
-- `_connect_onvif()`: SOAP client setup with authentication
+- `_connect_onvif()`: Kết nối ONVIF bằng `onvif-zeep` (Media/PTZ services + profile token)
 - `_execute_move_command()`: Apply velocity, wait, send STOP
 - `queue_zoom_command()`: Queue command (non-blocking)
 
@@ -202,9 +200,9 @@ python -m examples.demo
 ## Installation & Deployment
 
 ### Prerequisites
-- Jetson Orin NX with JetPack 5.x
+- Windows 10/11 hoặc Jetson Orin NX (JetPack 5.x)
 - Python 3.8+
-- GStreamer 1.0 with NVIDIA plugins
+- (Jetson + `STREAM_BACKEND=gst`) GStreamer 1.0 + NVIDIA plugins (JetPack)
 - ONVIF-compatible camera
 
 ### Setup
@@ -213,7 +211,8 @@ python -m examples.demo
 cd JetsonZoom
 
 # Create virtual environment
-python3 -m venv .venv
+# Jetson: nên dùng --system-site-packages để dùng OpenCV từ apt
+python3 -m venv .venv --system-site-packages
 source .venv/bin/activate
 
 # Install dependencies
@@ -231,7 +230,7 @@ python -m jetson_zoom
 - **zeep**: ONVIF/SOAP client
 - **lxml**: XML processing for ONVIF
 - **python-dotenv**: Environment configuration
-- **gi (PyGObject)**: GStreamer bindings (from system)
+- **OpenCV (cv2)**: RTSP capture + display (Windows: pip, Jetson: apt `python3-opencv`; tuỳ build có thể dùng CAP_GSTREAMER)
 
 ## Performance Characteristics
 

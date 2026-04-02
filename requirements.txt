@@ -1,15 +1,6 @@
-# JetsonZoom - Realtime Camera Control Application
-# Core dependencies for RTSP streaming and ONVIF control
-
-# RTSP Stream Handling (GStreamer bindings)
-gstreamer-python>=1.19.0
-
-# ONVIF Protocol (SOAP client for camera control)
-zeep>=4.2.0
+onvif-zeep>=0.2.12
 lxml>=4.9.0
-
-# Async support
-asyncio-taskgroups>=3.11.0
-
-# Logging and utilities
 python-dotenv>=0.21.0
+
+opencv-python>=4.8.0; platform_machine != "aarch64"
+PyQt5>=5.15.0; platform_machine != "aarch64"

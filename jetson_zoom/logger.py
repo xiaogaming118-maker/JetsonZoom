@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +41,10 @@ def get_logger(
     Returns:
         Configured logger instance
     """
+    env_level = os.getenv("LOG_LEVEL", "").strip().upper()
+    if env_level and level == logging.INFO:
+        level = getattr(logging, env_level, level)
+
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
